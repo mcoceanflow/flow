@@ -95,6 +95,9 @@ export default function AddTaskScreen() {
       )}
 
       <Button title="Add Task" onPress={handleSubmit} />
+      <TouchableOpacity onPress={() => router.replace('/')}>
+        <Text>Cancel</Text>
+      </TouchableOpacity>
     </View>
   );
 }
