@@ -1,8 +1,9 @@
 {
-  "name": "fireapp",
+  "name": "flow",
   "version": "1.0.0",
   "main": "index.ts",
   "dependencies": {
+    "@expo/metro-config": "~54.0.14",
     "expo": "~54.0.0",
     "expo-status-bar": "~3.0.9",
     "firebase": "^12.14.0",
