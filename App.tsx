@@ -1,4 +1,5 @@
 // App.tsx
+import "react-native-gesture-handler"; // must be the first import in the app
 import React from "react";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { SafeAreaProvider } from "react-native-safe-area-context";

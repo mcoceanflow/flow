@@ -1,18 +1,17 @@
 // Screens/ToDo.tsx
-import React, { useEffect, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import {
   View,
   Text,
   TextInput,
   TouchableOpacity,
-  FlatList,
   StyleSheet,
   KeyboardAvoidingView,
   Platform,
-  Animated,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
-import { Swipeable } from "react-native-gesture-handler";
+import Animated, { useAnimatedRef } from "react-native-reanimated";
+import Sortable, { type SortableGridRenderItem } from "react-native-sortables";
 import {
   collection,
   addDoc,
@@ -20,90 +19,131 @@ import {
   updateDoc,
   deleteDoc,
   doc,
-  query,
-  orderBy,
 } from "firebase/firestore";
 import { db } from "../firebaseConfig";
+import { getOrderBetween, getOrderForNewItem } from "../utils/order";
 
 type Todo = {
   id: string;
   text: string;
   done: boolean;
   createdAt: number;
+  order: number;
+  completedAt: number | null;
 };
 
 export default function ToDo() {
   const [todos, setTodos] = useState<Todo[]>([]);
   const [input, setInput] = useState("");
-
-  // Track open Swipeable rows so we can auto-close a previous row
-  // when a new one is swiped open (matches iOS Mail behavior).
-  const swipeableRefs = useRef<Map<string, Swipeable | null>>(new Map());
-  const openRowId = useRef<string | null>(null);
+  const scrollRef = useAnimatedRef<Animated.ScrollView>();
 
   useEffect(() => {
-    const q = query(collection(db, "todos"), orderBy("createdAt", "desc"));
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      const items: Todo[] = snapshot.docs.map((d) => ({
-        id: d.id,
-        ...(d.data() as Omit<Todo, "id">),
-      }));
+    // No orderBy here on purpose: undone and done items need two different
+    // sort orders, so we fetch everything once and split/sort client-side.
+    const unsubscribe = onSnapshot(collection(db, "todos"), (snapshot) => {
+      const items: Todo[] = snapshot.docs.map((d) => {
+        const data = d.data() as Omit<Todo, "id">;
+        return {
+          id: d.id,
+          ...data,
+          // Fallback for any pre-existing docs written before `order` existed.
+          order: typeof data.order === "number" ? data.order : Number.POSITIVE_INFINITY,
+          completedAt: data.completedAt ?? null,
+        };
+      });
       setTodos(items);
     });
     return unsubscribe;
   }, []);
 
+  const undoneTodos = useMemo(
+    () =>
+      todos
+        .filter((t) => !t.done)
+        .sort((a, b) => a.order - b.order),
+    [todos]
+  );
+
+  const doneTodos = useMemo(
+    () =>
+      todos
+        .filter((t) => t.done)
+        .sort((a, b) => (b.completedAt ?? 0) - (a.completedAt ?? 0)),
+    [todos]
+  );
+
   const addTodo = async () => {
     if (!input.trim()) return;
+    const newOrder = getOrderForNewItem(undoneTodos.map((t) => t.order));
     await addDoc(collection(db, "todos"), {
       text: input.trim(),
       done: false,
       createdAt: Date.now(),
+      order: newOrder,
+      completedAt: null,
     });
     setInput("");
   };
 
   const toggleTodo = async (id: string, done: boolean) => {
-    await updateDoc(doc(db, "todos", id), { done: !done });
+    // Un-completing an item never touches `order`, so it reappears exactly
+    // where it was before it was marked done.
+    await updateDoc(doc(db, "todos", id), {
+      done: !done,
+      completedAt: !done ? Date.now() : null,
+    });
   };
 
   const removeTodo = async (id: string) => {
-    swipeableRefs.current.get(id)?.close();
     await deleteDoc(doc(db, "todos", id));
-    swipeableRefs.current.delete(id);
   };
 
-  const closeOtherRows = (id: string) => {
-    if (openRowId.current && openRowId.current !== id) {
-      swipeableRefs.current.get(openRowId.current)?.close();
-    }
-    openRowId.current = id;
-  };
+  const handleDragEnd = useCallback(
+    async ({
+      data,
+      fromIndex,
+      toIndex,
+    }: {
+      data: Todo[];
+      fromIndex: number;
+      toIndex: number;
+    }) => {
+      if (fromIndex === toIndex) return;
+      const moved = data[toIndex];
+      const prevOrder = toIndex > 0 ? data[toIndex - 1].order : null;
+      const nextOrder =
+        toIndex < data.length - 1 ? data[toIndex + 1].order : null;
+      const newOrder = getOrderBetween(prevOrder, nextOrder);
+      await updateDoc(doc(db, "todos", moved.id), { order: newOrder });
+    },
+    []
+  );
 
-  const renderRightActions = (
-    id: string,
-    progress: Animated.AnimatedInterpolation<number>
-  ) => {
-    const translateX = progress.interpolate({
-      inputRange: [0, 1],
-      outputRange: [100, 0],
-      extrapolate: "clamp",
-    });
-    return (
-      <TouchableOpacity
-        activeOpacity={0.8}
-        style={styles.deleteAction}
-        onPress={() => removeTodo(id)}
-      >
-        <Animated.Text
-          style={[styles.deleteActionText, { transform: [{ translateX }] }]}
-          numberOfLines={1}
+  const renderUndoneItem = useCallback<SortableGridRenderItem<Todo>>(
+    ({ item }) => (
+      <View style={styles.todoRow}>
+        <TouchableOpacity
+          style={styles.todoTextWrap}
+          onPress={() => toggleTodo(item.id, item.done)}
+          activeOpacity={0.6}
         >
-          Delete
-        </Animated.Text>
-      </TouchableOpacity>
-    );
-  };
+          <View style={styles.checkbox}>
+            <Text> </Text>
+          </View>
+          <Text style={styles.todoText}>{item.text}</Text>
+        </TouchableOpacity>
+        <TouchableOpacity
+          onPress={() => removeTodo(item.id)}
+          hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+        >
+          <Text style={styles.deleteText}>✕</Text>
+        </TouchableOpacity>
+      </View>
+    ),
+    []
+  );
+
+  const hasItems = todos.length > 0;
 
   return (
     <SafeAreaView style={styles.safeArea} edges={["top", "bottom"]}>
@@ -134,50 +174,60 @@ export default function ToDo() {
             </TouchableOpacity>
           </View>
 
-          <FlatList
-            data={todos}
-            keyExtractor={(item) => item.id}
-            contentContainerStyle={
-              todos.length === 0 ? styles.emptyListContent : styles.listContent
-            }
-            ItemSeparatorComponent={() => <View style={styles.separator} />}
-            ListEmptyComponent={
-              <View style={styles.emptyState}>
-                <Text style={styles.emptyStateText}>Nothing here yet</Text>
-                <Text style={styles.emptyStateSubtext}>
-                  Add your first task above
-                </Text>
-              </View>
-            }
-            renderItem={({ item }) => (
-              <Swipeable
-                ref={(ref) => {
-                  swipeableRefs.current.set(item.id, ref);
-                }}
-                renderRightActions={(progress) =>
-                  renderRightActions(item.id, progress)
-                }
-                overshootRight={false}
-                rightThreshold={40}
-                onSwipeableWillOpen={() => closeOtherRows(item.id)}
-              >
-                <View style={styles.todoRow}>
-                  <TouchableOpacity
-                    style={styles.todoTextWrap}
-                    onPress={() => toggleTodo(item.id, item.done)}
-                    activeOpacity={0.6}
-                  >
-                    <View style={[styles.checkbox, item.done && styles.checkboxDone]}>
-                      {item.done && <Text style={styles.checkmark}>✓</Text>}
+          {!hasItems ? (
+            <View style={styles.emptyState}>
+              <Text style={styles.emptyStateText}>Nothing here yet</Text>
+              <Text style={styles.emptyStateSubtext}>
+                Add your first task above
+              </Text>
+            </View>
+          ) : (
+            <Animated.ScrollView
+              ref={scrollRef}
+              contentContainerStyle={styles.listContent}
+              showsVerticalScrollIndicator={false}
+            >
+              {/* Undone items: press and hold to drag and reorder. */}
+              <Sortable.Grid
+                columns={1}
+                data={undoneTodos}
+                keyExtractor={(item) => item.id}
+                renderItem={renderUndoneItem}
+                rowGap={1}
+                onDragEnd={handleDragEnd}
+                scrollableRef={scrollRef}
+                showDropIndicator
+              />
+
+              {/* Done items: not draggable, sorted by completion time, tap to undo. */}
+              {doneTodos.length > 0 && (
+                <View style={styles.doneSection}>
+                  {doneTodos.map((item) => (
+                    <View key={item.id} style={styles.todoRow}>
+                      <TouchableOpacity
+                        style={styles.todoTextWrap}
+                        onPress={() => toggleTodo(item.id, item.done)}
+                        activeOpacity={0.6}
+                      >
+                        <View style={[styles.checkbox, styles.checkboxDone]}>
+                          <Text style={styles.checkmark}>✓</Text>
+                        </View>
+                        <Text style={[styles.todoText, styles.todoDone]}>
+                          {item.text}
+                        </Text>
+                      </TouchableOpacity>
+                      <TouchableOpacity
+                        onPress={() => removeTodo(item.id)}
+                        hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                      >
+                        <Text style={styles.deleteText}>✕</Text>
+                      </TouchableOpacity>
                     </View>
-                    <Text style={[styles.todoText, item.done && styles.todoDone]}>
-                      {item.text}
-                    </Text>
-                  </TouchableOpacity>
+                  ))}
                 </View>
-              </Swipeable>
-            )}
-          />
+              )}
+            </Animated.ScrollView>
+          )}
         </View>
       </KeyboardAvoidingView>
     </SafeAreaView>
@@ -226,14 +276,19 @@ const styles = StyleSheet.create({
   },
   addButtonText: { color: "#fff", fontWeight: "700", fontSize: 15 },
   listContent: { paddingBottom: 24 },
-  emptyListContent: { flexGrow: 1, paddingBottom: 24 },
-  separator: { height: 1, backgroundColor: "#eee" },
+  doneSection: {
+    marginTop: 4,
+    borderTopWidth: 1,
+    borderTopColor: "#eee",
+  },
   todoRow: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
     paddingVertical: 14,
     backgroundColor: "#fafafa",
+    borderBottomWidth: 1,
+    borderBottomColor: "#eee",
   },
   todoTextWrap: { flex: 1, flexDirection: "row", alignItems: "center" },
   checkbox: {
@@ -253,6 +308,7 @@ const styles = StyleSheet.create({
   checkmark: { color: "#fff", fontSize: 13, fontWeight: "700" },
   todoText: { fontSize: 16, color: "#111", flexShrink: 1 },
   todoDone: { textDecorationLine: "line-through", color: "#aaa" },
+  deleteText: { color: "#c00", fontSize: 16, paddingHorizontal: 8 },
   emptyState: {
     flex: 1,
     justifyContent: "center",
@@ -261,15 +317,4 @@ const styles = StyleSheet.create({
   },
   emptyStateText: { fontSize: 17, fontWeight: "600", color: "#777" },
   emptyStateSubtext: { fontSize: 14, color: "#aaa", marginTop: 4 },
-  deleteAction: {
-    backgroundColor: "#c00",
-    justifyContent: "center",
-    alignItems: "center",
-    width: 100,
-  },
-  deleteActionText: {
-    color: "#fff",
-    fontWeight: "600",
-    fontSize: 15,
-  },
 });
