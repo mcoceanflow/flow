@@ -1,5 +1,5 @@
 // Screens/ToDo.tsx
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   View,
   Text,
@@ -10,7 +10,14 @@ import {
   Platform,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
-import Animated, { useAnimatedRef } from "react-native-reanimated";
+import Animated, {
+  useAnimatedRef,
+  useAnimatedStyle,
+  type SharedValue,
+} from "react-native-reanimated";
+import ReanimatedSwipeable, {
+  type SwipeableMethods,
+} from "react-native-gesture-handler/ReanimatedSwipeable";
 import Sortable, { type SortableGridRenderItem } from "react-native-sortables";
 import {
   collection,
@@ -32,10 +39,76 @@ type Todo = {
   completedAt: number | null;
 };
 
+const DELETE_ACTION_WIDTH = 88;
+
+// The red "Delete" button revealed behind a row when it's swiped left.
+// It slides in from the right edge in step with the finger, like iOS Mail.
+function DeleteAction({
+  translation,
+  onPress,
+}: {
+  translation: SharedValue<number>;
+  onPress: () => void;
+}) {
+  const animatedStyle = useAnimatedStyle(() => ({
+    transform: [{ translateX: translation.value + DELETE_ACTION_WIDTH }],
+  }));
+  return (
+    <Animated.View style={[styles.deleteAction, animatedStyle]}>
+      <TouchableOpacity
+        style={styles.deleteActionButton}
+        onPress={onPress}
+        activeOpacity={0.7}
+      >
+        <Text style={styles.deleteActionText}>Delete</Text>
+      </TouchableOpacity>
+    </Animated.View>
+  );
+}
+
+// Wraps a row so it can be swiped left to reveal "Delete".
+// Only one row stays open at a time: opening a row closes the previous one.
+function SwipeToDeleteRow({
+  onDelete,
+  openRowRef,
+  children,
+}: {
+  onDelete: () => void;
+  openRowRef: React.MutableRefObject<SwipeableMethods | null>;
+  children: React.ReactNode;
+}) {
+  const swipeableRef = useRef<SwipeableMethods>(null);
+  return (
+    <ReanimatedSwipeable
+      ref={swipeableRef}
+      friction={1.5}
+      rightThreshold={DELETE_ACTION_WIDTH / 2}
+      overshootRight={false}
+      onSwipeableWillOpen={() => {
+        if (openRowRef.current && openRowRef.current !== swipeableRef.current) {
+          openRowRef.current.close();
+        }
+        openRowRef.current = swipeableRef.current;
+      }}
+      onSwipeableClose={() => {
+        if (openRowRef.current === swipeableRef.current) {
+          openRowRef.current = null;
+        }
+      }}
+      renderRightActions={(_progress, translation) => (
+        <DeleteAction translation={translation} onPress={onDelete} />
+      )}
+    >
+      {children}
+    </ReanimatedSwipeable>
+  );
+}
+
 export default function ToDo() {
   const [todos, setTodos] = useState<Todo[]>([]);
   const [input, setInput] = useState("");
   const scrollRef = useAnimatedRef<Animated.ScrollView>();
+  const openRowRef = useRef<SwipeableMethods | null>(null);
 
   useEffect(() => {
     // No orderBy here on purpose: undone and done items need two different
@@ -121,24 +194,23 @@ export default function ToDo() {
 
   const renderUndoneItem = useCallback<SortableGridRenderItem<Todo>>(
     ({ item }) => (
-      <View style={styles.todoRow}>
-        <TouchableOpacity
-          style={styles.todoTextWrap}
-          onPress={() => toggleTodo(item.id, item.done)}
-          activeOpacity={0.6}
-        >
-          <View style={styles.checkbox}>
-            <Text> </Text>
-          </View>
-          <Text style={styles.todoText}>{item.text}</Text>
-        </TouchableOpacity>
-        <TouchableOpacity
-          onPress={() => removeTodo(item.id)}
-          hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-        >
-          <Text style={styles.deleteText}>✕</Text>
-        </TouchableOpacity>
-      </View>
+      <SwipeToDeleteRow
+        onDelete={() => removeTodo(item.id)}
+        openRowRef={openRowRef}
+      >
+        <View style={styles.todoRow}>
+          <TouchableOpacity
+            style={styles.todoTextWrap}
+            onPress={() => toggleTodo(item.id, item.done)}
+            activeOpacity={0.6}
+          >
+            <View style={styles.checkbox}>
+              <Text> </Text>
+            </View>
+            <Text style={styles.todoText}>{item.text}</Text>
+          </TouchableOpacity>
+        </View>
+      </SwipeToDeleteRow>
     ),
     []
   );
@@ -203,26 +275,26 @@ export default function ToDo() {
               {doneTodos.length > 0 && (
                 <View style={styles.doneSection}>
                   {doneTodos.map((item) => (
-                    <View key={item.id} style={styles.todoRow}>
-                      <TouchableOpacity
-                        style={styles.todoTextWrap}
-                        onPress={() => toggleTodo(item.id, item.done)}
-                        activeOpacity={0.6}
-                      >
-                        <View style={[styles.checkbox, styles.checkboxDone]}>
-                          <Text style={styles.checkmark}>✓</Text>
-                        </View>
-                        <Text style={[styles.todoText, styles.todoDone]}>
-                          {item.text}
-                        </Text>
-                      </TouchableOpacity>
-                      <TouchableOpacity
-                        onPress={() => removeTodo(item.id)}
-                        hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-                      >
-                        <Text style={styles.deleteText}>✕</Text>
-                      </TouchableOpacity>
-                    </View>
+                    <SwipeToDeleteRow
+                      key={item.id}
+                      onDelete={() => removeTodo(item.id)}
+                      openRowRef={openRowRef}
+                    >
+                      <View style={styles.todoRow}>
+                        <TouchableOpacity
+                          style={styles.todoTextWrap}
+                          onPress={() => toggleTodo(item.id, item.done)}
+                          activeOpacity={0.6}
+                        >
+                          <View style={[styles.checkbox, styles.checkboxDone]}>
+                            <Text style={styles.checkmark}>✓</Text>
+                          </View>
+                          <Text style={[styles.todoText, styles.todoDone]}>
+                            {item.text}
+                          </Text>
+                        </TouchableOpacity>
+                      </View>
+                    </SwipeToDeleteRow>
                   ))}
                 </View>
               )}
@@ -308,7 +380,16 @@ const styles = StyleSheet.create({
   checkmark: { color: "#fff", fontSize: 13, fontWeight: "700" },
   todoText: { fontSize: 16, color: "#111", flexShrink: 1 },
   todoDone: { textDecorationLine: "line-through", color: "#aaa" },
-  deleteText: { color: "#c00", fontSize: 16, paddingHorizontal: 8 },
+  deleteAction: {
+    width: DELETE_ACTION_WIDTH,
+    backgroundColor: "#ff3b30",
+  },
+  deleteActionButton: {
+    flex: 1,
+    justifyContent: "center",
+    alignItems: "center",
+  },
+  deleteActionText: { color: "#fff", fontWeight: "600", fontSize: 15 },
   emptyState: {
     flex: 1,
     justifyContent: "center",
