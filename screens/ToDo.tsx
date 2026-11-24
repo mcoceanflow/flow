@@ -105,6 +105,8 @@ export default function ToDo() {
   const [input, setInput] = useState("");
   const [openGroupId, setOpenGroupId] = useState<string | null>(null);
   const [showStats, setShowStats] = useState(false);
+  // Focus mode: tap "Flow" to hide everything except what's left to do today.
+  const [focusMode, setFocusMode] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [movingId, setMovingId] = useState<string | null>(null);
   const today = useToday();
@@ -481,7 +483,7 @@ export default function ToDo() {
     );
   }
 
-  const hasItems = levelItems.length > 0;
+  const hasItems = focusMode ? undoneTodos.length > 0 : levelItems.length > 0;
 
   return (
     <SafeAreaView style={styles.safeArea} edges={["top", "bottom"]}>
@@ -532,13 +534,22 @@ export default function ToDo() {
             </>
           ) : (
             <View style={styles.titleRow}>
-              <Text style={styles.title}>Flow</Text>
-              <TouchableOpacity onPress={() => setShowStats(true)} hitSlop={10}>
-                <Text style={styles.statsLink}>Stats</Text>
+              <TouchableOpacity
+                onPress={() => setFocusMode((f) => !f)}
+                hitSlop={10}
+                activeOpacity={0.6}
+              >
+                <Text style={[styles.title, focusMode && styles.titleFocus]}>Flow</Text>
               </TouchableOpacity>
+              {!focusMode && (
+                <TouchableOpacity onPress={() => setShowStats(true)} hitSlop={10}>
+                  <Text style={styles.statsLink}>Stats</Text>
+                </TouchableOpacity>
+              )}
             </View>
           )}
 
+          {!focusMode && (
           <View style={styles.inputRow}>
             <TextInput
               style={styles.input}
@@ -558,8 +569,15 @@ export default function ToDo() {
               <Text style={styles.addButtonText}>Add</Text>
             </TouchableOpacity>
           </View>
+          )}
 
           {!hasItems ? (
+            focusMode ? (
+              <View style={styles.emptyState}>
+                <Text style={styles.emptyStateText}>All clear for today</Text>
+                <Text style={styles.emptyStateSubtext}>Tap Flow to see everything</Text>
+              </View>
+            ) : (
             <View style={styles.emptyState}>
               <Text style={styles.emptyStateText}>
                 {openGroup ? "No subtasks yet" : "Nothing here yet"}
@@ -568,6 +586,7 @@ export default function ToDo() {
                 {openGroup ? "Add the first one above" : "Add your first task above"}
               </Text>
             </View>
+            )
           ) : (
             <Animated.ScrollView
               ref={scrollRef}
@@ -588,7 +607,7 @@ export default function ToDo() {
               />
 
               {/* Upcoming: repeating tasks whose first due date is still ahead. */}
-              {upcomingTodos.length > 0 && (
+              {!focusMode && upcomingTodos.length > 0 && (
                 <View style={styles.upcomingSection}>
                   <Text style={styles.sectionLabel}>Upcoming</Text>
                   {upcomingTodos.map((item) => (
@@ -598,7 +617,7 @@ export default function ToDo() {
               )}
 
               {/* Done items: not draggable, sorted by completion time. */}
-              {doneTodos.length > 0 && (
+              {!focusMode && doneTodos.length > 0 && (
                 <View style={styles.doneSection}>
                   {doneTodos.map((item) => (
                     <React.Fragment key={item.id}>{renderRow(item)}</React.Fragment>
@@ -654,6 +673,7 @@ const styles = StyleSheet.create({
     color: "#111",
     letterSpacing: -0.5,
   },
+  titleFocus: { color: "#007aff" },
   statsLink: { fontSize: 16, color: "#007aff", fontWeight: "600" },
   backButton: { marginTop: 8, alignSelf: "flex-start" },
   backText: { fontSize: 17, color: "#007aff" },
